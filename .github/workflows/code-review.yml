@@ -90,20 +90,19 @@ jobs:
             | if . == null then [] else . end
           ')
 
-          if ! echo "$CLEANED_JSON" | jq -e 'type == "array"' > /dev/null 2>&1; then
+          if [ -z "$CLEANED_JSON" ] || ! echo "$CLEANED_JSON" | jq -e 'type == "array"' > /dev/null 2>&1; then
             CLEANED_JSON="[]"
           fi
 
           echo "Sanitized Comments JSON: $CLEANED_JSON"
 
-          echo "REVIEW_COMMENTS_JSON<<EOF" >> $GITHUB_ENV
-          echo "$CLEANED_JSON" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          echo "comments_json=$CLEANED_JSON" >> $GITHUB_OUTPUT
+          echo "REVIEW_COMMENTS_JSON=$CLEANED_JSON" >> $GITHUB_ENV
 
       - name: Post review comments to PR
         uses: nbaztec/add-pr-review-comment@v1.0.7
+        env:
+          REVIEW_COMMENTS_JSON: ${{ env.REVIEW_COMMENTS_JSON }}
         with:
-          comments: ${{ steps.llm_review.outputs.comments_json }}
+          comments: ${{ env.REVIEW_COMMENTS_JSON }}
           repo-token: ${{ secrets.REVIEW_BOT_TOKEN }}
           allow-repeats: false
