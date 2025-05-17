@@ -2,15 +2,17 @@ name: CodeReview
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-
     steps:
       - name: Check out code
         uses: actions/checkout@v3
@@ -18,56 +20,58 @@ jobs:
           fetch-depth: 0
 
       - name: Get git diff
+        id: git_diff
         run: |
-          git fetch origin
-          git diff --unified=0 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > diff.txt
+          git fetch origin ${{ github.event.pull_request.base.sha }}
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git diff --unified=3 "origin/${{ github.event.pull_request.base.ref }}" "origin/${{ github.event.pull_request.head.ref }}" > diff.txt
           echo "DIFF_CONTENT<<EOF" >> $GITHUB_ENV
           cat diff.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Request review from Ollama
+      - name: Send to LLM for review and format output
+        id: llm_review
         run: |
           ESCAPED_DIFF=$(echo "$DIFF_CONTENT" | jq -sRr @json)
-
           PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
-          "You are a senior software engineer reviewing the following code diff.
-
-Please analyze it and respond with JSON only, using this exact structure:
-
-[
-  {
-    \"path\": \"<file_path>\",
-    \"line\": <line_number>,
-    \"text\": \"<concise review comment>\",
-    \"side\": \"RIGHT\"
-  }
-]
-
-Here is the git diff:
-\($diff)"
-          ')
+          "You are a senior software engineer performing a thorough code review.
+          Given the following git diff, provide your review comments.
+          For each issue you find:
+            - Identify the file path.
+            - Identify the specific line number in the new version of the file where the issue occurs.
+              (Refer to hunk headers like '\''@@ -old_start,old_lines +new_start,new_lines @@'\'' to calculate the correct line number for added/modified lines).
+            - Provide a concise review comment.
+          Output your findings ONLY as a JSON array of objects. Each object MUST have the following keys:
+          `path`: string (the full path to the file)
+          `line`: number (the line number in the new version of the file)
+          `body`: string (your review comment for that line)
+          If no issues are found, output an empty JSON array: [].
+          Do NOT include any other text, explanations, or markdown formatting outside of this JSON array.
+          Here is the git diff:
+          \($diff)"')
 
           REQUEST_BODY=$(jq -n \
             --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
             --arg prompt "$PROMPT" \
-            '{model: $model, prompt: $prompt, stream: false}')
+            '{model: $model, prompt: $prompt, stream: false}'
+          )
 
-          RESPONSE=$(curl -s -X POST ${{ secrets.REVIEW_API_URL }} \
+          RAW_RESPONSE=$(curl -s -X POST ${{ secrets.REVIEW_API_URL }} \
             -H "Content-Type: application/json" \
-            -d "$REQUEST_BODY" | jq -r .response)
+            -d "$REQUEST_BODY")
 
-          echo "$RESPONSE" > res.txt
+          PARSED_RESPONSE=$(echo "$RAW_RESPONSE" | jq -r .response)
+          CLEANED_JSON=$(echo "$PARSED_RESPONSE" | sed 's/^```json//;s/^```//;s/```$//' | jq -c .)
 
-      - name: Clean and parse LLM output
-        id: parse
-        run: |
-          sed '/^```/d' res.txt > cleaned.txt
-          COMMENT_JSON=$(cat cleaned.txt | jq -c .)
-          echo "comments=${COMMENT_JSON}" >> $GITHUB_OUTPUT
+          echo "REVIEW_COMMENTS_JSON<<EOF" >> $GITHUB_ENV
+          echo "$CLEANED_JSON" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
-      - name: Post line-by-line comments to PR
+          echo "comments_json=$CLEANED_JSON" >> $GITHUB_OUTPUT
+
+      - name: Post review comments to PR
         uses: nbaztec/add-pr-review-comment@v1.0.7
         with:
-          comments: ${{ steps.parse.outputs.comments }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          repo-token-user-login: 'github-actions[bot]'
+          comments: ${{ steps.llm_review.outputs.comments_json }}
+          repo-token: ${{ secrets.REVIEW_BOT_TOKEN }}
+          allow-repeats: false
