@@ -28,7 +28,7 @@ jobs:
         run: |
           ESCAPED_DIFF=$(echo "$DIFF_CONTENT" | jq -sRr @json)
 
-          PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
+            PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
             "You are a senior-level software engineer performing a thorough code review.
 
             Given the following git diff, do the following:
@@ -45,15 +45,19 @@ jobs:
             📄 <file_path>
 
             - [Line <line_number>]
-              \`\`\`original code\`\`\`
+              ~~~
+              original code
+              ~~~
               → Suggested change:
-              \`\`\`suggested code\`\`\`
+              ~~~
+              suggested code
+              ~~~
               **Reason**: explanation...
 
             Here is the git diff:
 
             \($diff)"
-          ')
+            ')
 
           REQUEST_BODY=$(jq -n \
             --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
