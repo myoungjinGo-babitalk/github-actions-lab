@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - develop
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
@@ -13,6 +14,7 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check out code
         uses: actions/checkout@v3
@@ -33,6 +35,7 @@ jobs:
         id: llm_review
         run: |
           ESCAPED_DIFF=$(echo "$DIFF_CONTENT" | jq -sRr @json)
+
           PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
           "You are a senior software engineer performing a thorough code review.
           Given the following git diff, provide your review comments.
@@ -47,8 +50,11 @@ jobs:
           `body`: string (your review comment for that line)
           If no issues are found, output an empty JSON array: [].
           Do NOT include any other text, explanations, or markdown formatting outside of this JSON array.
+
           Here is the git diff:
-          \($diff)"')
+
+          \($diff)"
+          ')
 
           REQUEST_BODY=$(jq -n \
             --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
@@ -60,13 +66,39 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$REQUEST_BODY")
 
-          PARSED_RESPONSE=$(echo "$RAW_RESPONSE" | jq -r .response)
-          CLEANED_JSON=$(echo "$PARSED_RESPONSE" | sed 's/^```json//;s/^```//;s/```$//' | jq -c .)
+          POTENTIALLY_FENCED_JSON_STRING=$(echo "$RAW_RESPONSE" | jq -r .response)
+          UNFENCED_JSON_STRING=$(echo "$POTENTIALLY_FENCED_JSON_STRING" | sed 's/^```json//;s/^```//;s/```$//')
+
+          CLEANED_JSON=$(echo "$UNFENCED_JSON_STRING" | jq -c '
+            if type == "array" then
+              map(
+                if type == "object" and has("path") and has("line") and has("body") then
+                  {
+                    path: (.path | tostring),
+                    line: (.line | tonumber? // 0),
+                    body: (.body | tostring)
+                  }
+                else
+                  empty
+                end
+              )
+            elif type == "string" and . == "[]" then
+              []
+            else
+              []
+            end
+            | if . == null then [] else . end
+          ')
+
+          if ! echo "$CLEANED_JSON" | jq -e 'type == "array"' > /dev/null 2>&1; then
+            CLEANED_JSON="[]"
+          fi
+
+          echo "Sanitized Comments JSON: $CLEANED_JSON"
 
           echo "REVIEW_COMMENTS_JSON<<EOF" >> $GITHUB_ENV
           echo "$CLEANED_JSON" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-
           echo "comments_json=$CLEANED_JSON" >> $GITHUB_OUTPUT
 
       - name: Post review comments to PR
