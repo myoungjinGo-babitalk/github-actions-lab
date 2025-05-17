@@ -2,13 +2,14 @@ name: CodeReview
 
 on:
   pull_request:
-    branches:
-      - main
-      - develop
+    types: [opened, reopened, synchronize]
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Check out code
@@ -19,68 +20,54 @@ jobs:
       - name: Get git diff
         run: |
           git fetch origin
-          git diff --unified=3 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > diff.txt
+          git diff --unified=0 ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > diff.txt
           echo "DIFF_CONTENT<<EOF" >> $GITHUB_ENV
           cat diff.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Send to LLM for review
+      - name: Request review from Ollama
         run: |
           ESCAPED_DIFF=$(echo "$DIFF_CONTENT" | jq -sRr @json)
 
-            PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
-            "You are a senior-level software engineer performing a thorough code review.
+          PROMPT=$(jq -n --arg diff "$ESCAPED_DIFF" '
+          "You are a senior software engineer reviewing the following code diff.
 
-            Given the following git diff, do the following:
+Please analyze it and respond with JSON only, using this exact structure:
 
-            1. Provide a short summary of what the PR does.
-            2. For each issue you find:
-                - Include the file path and line number
-                - Quote the original code line
-                - Propose a better version
-                - Explain why your suggestion improves the code
+[
+  {
+    \"path\": \"<file_path>\",
+    \"line\": <line_number>,
+    \"text\": \"<concise review comment>\",
+    \"side\": \"RIGHT\"
+  }
+]
 
-            Use the following format:
-
-            📄 <file_path>
-
-            - [Line <line_number>]
-              ~~~
-              original code
-              ~~~
-              → Suggested change:
-              ~~~
-              suggested code
-              ~~~
-              **Reason**: explanation...
-
-            Here is the git diff:
-
-            \($diff)"
-            ')
+Here is the git diff:
+\($diff)"
+          ')
 
           REQUEST_BODY=$(jq -n \
             --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
             --arg prompt "$PROMPT" \
-            '{model: $model, prompt: $prompt, stream: false}'
-          )
+            '{model: $model, prompt: $prompt, stream: false}')
 
           RESPONSE=$(curl -s -X POST ${{ secrets.REVIEW_API_URL }} \
             -H "Content-Type: application/json" \
             -d "$REQUEST_BODY" | jq -r .response)
 
-          echo "REVIEW_RESPONSE<<EOF" >> $GITHUB_ENV
-          echo "$RESPONSE" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "$RESPONSE" > res.txt
 
-      - name: Post review comment on PR
-        uses: actions/github-script@v6
+      - name: Clean and parse LLM output
+        id: parse
+        run: |
+          sed '/^```/d' res.txt > cleaned.txt
+          COMMENT_JSON=$(cat cleaned.txt | jq -c .)
+          echo "comments=${COMMENT_JSON}" >> $GITHUB_OUTPUT
+
+      - name: Post line-by-line comments to PR
+        uses: nbaztec/add-pr-review-comment@v1.0.7
         with:
-          github-token: ${{ secrets.REVIEW_BOT_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: process.env.REVIEW_RESPONSE
-            });
+          comments: ${{ steps.parse.outputs.comments }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token-user-login: 'github-actions[bot]'
