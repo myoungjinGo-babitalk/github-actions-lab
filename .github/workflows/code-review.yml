@@ -2,7 +2,11 @@ name: Ollama Code Review
 
 on:
   push:
-    branches: [main, develop]
+    branches: [feature/gemini]
+    paths:
+      - "backend/**"
+  pull_request:
+    types: [opened, synchronize]
 
 jobs:
   code-review:
@@ -22,13 +26,13 @@ jobs:
         run: |
           git fetch origin "${{ github.event.pull_request.base.ref }}"
           git fetch origin "${{ github.event.pull_request.head.ref }}"
-          git diff --unified=0 "origin/${{ github.event.pull_request.base.ref }}"..."origin/${{ github.event.pull_request.head.ref }}" > "diff.txt"
+          git diff --unified=0 "origin/${{ github.event.pull_request.base.ref }}"..."origin/${{ github.event.pull_request.head.ref }}" > diff.txt
           echo "EVENT_TYPE=pull_request" >> $GITHUB_ENV
 
       - name: Get git diff for Push
         if: github.event_name == 'push'
         run: |
-          git diff --unified=0 HEAD^ HEAD > "diff.txt"
+          git diff --unified=0 HEAD^ HEAD > diff.txt
           echo "EVENT_TYPE=push" >> $GITHUB_ENV
 
       - name: Run Ollama Review
@@ -36,47 +40,49 @@ jobs:
           DIFF=$(cat diff.txt | jq -sRr @json)
 
           if [ "$EVENT_TYPE" = "pull_request" ]; then
-            PROMPT=$(jq -n --arg diff "$DIFF" '
-              "You are a senior software engineer and need to perform a code review based on the results of a given git diff.
+            PROMPT=$(cat <<EOF
+          You are a senior software engineer and need to perform a code review based on the results of a given git diff.
 
-                      Review the changed code carefully and respond in **JSON format** only, using this structure:
+          Review the changed code carefully and respond in **JSON format** only, using this structure:
 
-                      [
-                        {
-                          \"path\": \"<file_path>\",
-                          \"line\": <line_number>,
-                          \"text\": \"<review comment>\",
-                          \"side\": \"RIGHT\"
-                        }
-                      ]
+          [
+            {
+              "path": "<file_path>",
+              "line": <line_number>,
+              "text": "<review comment>",
+              "side": "RIGHT"
+            }
+          ]
 
-                      Base your line numbers on the @@ line chunk markers in the diff. Output only valid JSON.
+          Base your line numbers on the @@ line chunk markers in the diff. Output only valid JSON.
 
-                      <git diff> \($diff) </git diff>"
-                                  ')
+          <git diff> $DIFF </git diff>
+          EOF
+          )
                     else
-                      PROMPT=$(jq -n --arg diff "$DIFF" '
-                        "You are a senior software engineer and need to provide a code review based on the following git diff.
+                      PROMPT=$(cat <<EOF
+          You are a senior software engineer and need to provide a code review based on the following git diff.
 
           Offer detailed feedback in Markdown with headings per file.
 
-          <git diff> \($diff) </git diff>"
-                      ')
-                    fi
+          <git diff> $DIFF </git diff>
+          EOF
+          )
+          fi
 
-                    echo "$PROMPT" > prompt.json
+          REQUEST_BODY=$(jq -n \
+            --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
+            --arg prompt "$PROMPT" \
+            '{model: $model, prompt: $prompt, stream: false}')
 
-                    REQUEST_BODY=$(jq -n \
-                      --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
-                      --argfile prompt prompt.json \
-                      '{model: $model, prompt: $prompt, stream: false}')
+          echo "$REQUEST_BODY" > body.json
 
-                    RESPONSE=$(curl -s -X POST "${{ secrets.REVIEW_API_URL }}" \
-                      -H "Content-Type: application/json" \
-                      -d "$REQUEST_BODY" | jq -r .response)
+          RESPONSE=$(curl -s -X POST "${{ secrets.REVIEW_API_URL }}" \
+            -H "Content-Type: application/json" \
+            -d @body.json | jq -r .response)
 
-                    echo "$RESPONSE" > review_result.txt
-                    echo "REVIEW DONE"
+          echo "$RESPONSE" > review_result.txt
+          echo "REVIEW DONE"
 
       - name: Format and parse PR review comments
         if: env.EVENT_TYPE == 'pull_request'
