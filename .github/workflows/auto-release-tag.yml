@@ -132,6 +132,8 @@ jobs:
         run: |
           echo "## ❌ 태그 생성 실패" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "PR 제목 형식을 확인하세요:" >> $GITHUB_STEP_SUMMARY
-          echo "- 정식 배포: \`[Release] v26.03.30 - CRM 마케팅 공주 거울\`" >> $GITHUB_STEP_SUMMARY
-          echo "- HotFix:   \`[HotFix] v26.03.30a - 긴급 패치\`" >> $GITHUB_STEP_SUMMARY
+          echo "PR 제목 어디든 버전 패턴이 포함되어야 합니다." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 패턴: \`v[YY].[MM].[DD]\` 또는 \`v[YY].[MM].[DD][a-z]\`" >> $GITHUB_STEP_SUMMARY
+          echo "- 정식 배포 예) 제목에 \`v26.03.30\` 이 포함되면 OK" >> $GITHUB_STEP_SUMMARY
+          echo "- HotFix 예) 제목에 \`v26.03.30a\` 이 포함되면 OK" >> $GITHUB_STEP_SUMMARY
