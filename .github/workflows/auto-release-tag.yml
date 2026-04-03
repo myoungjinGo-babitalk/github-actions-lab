@@ -32,7 +32,8 @@ jobs:
           # PR 제목 어디서든 버전 패턴만 추출 (vYY.MM.DD 또는 vYY.MM.DDx)
           # 예) "[Release] v26.03.30 - CRM 마케팅" → v26.03.30
           # 예) "[HotFix] v26.03.30a - 긴급 패치"  → v26.03.30a
-          VERSION=$(echo "$PR_TITLE" | grep -oE 'v[0-9]{2}\.[0-9]{2}\.[0-9]{2}[a-z]?' | head -1)
+          VERSION=$(echo "$PR_TITLE" | grep -oiE 'v[0-9]{2}.[0-9]{2}.[0-9]{2}[a-z]?' | head -1)
+          VERSION=$(echo "$VERSION" | tr 'A-Z' 'a-z')
 
           if [ -z "$VERSION" ]; then
             echo "❌ PR 제목에서 버전을 추출할 수 없습니다."
