@@ -1,0 +1,116 @@
+name: Ollama Code Review
+
+on:
+  push:
+    branches: [feature/gemini]
+    paths:
+      - "backend/**"
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get git diff for PR
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}"
+          git fetch origin "${{ github.event.pull_request.head.ref }}"
+          git diff --unified=0 "origin/${{ github.event.pull_request.base.ref }}"..."origin/${{ github.event.pull_request.head.ref }}" > diff.txt
+          echo "EVENT_TYPE=pull_request" >> $GITHUB_ENV
+
+      - name: Get git diff for Push
+        if: github.event_name == 'push'
+        run: |
+          git diff --unified=0 HEAD^ HEAD > diff.txt
+          echo "EVENT_TYPE=push" >> $GITHUB_ENV
+
+      - name: Run Ollama Review
+        run: |
+          DIFF=$(cat diff.txt | jq -sRr @json)
+
+          if [ "$EVENT_TYPE" = "pull_request" ]; then
+            PROMPT=$(cat <<EOF
+          You are a senior software engineer and need to perform a code review based on the results of a given git diff.
+
+          Review the changed code carefully and respond in **JSON format** only, using this structure:
+
+          [
+            {
+              "path": "<file_path>",
+              "line": <line_number>,
+              "text": "<review comment>",
+              "side": "RIGHT"
+            }
+          ]
+
+          Base your line numbers on the @@ line chunk markers in the diff. Output only valid JSON.
+
+          <git diff> $DIFF </git diff>
+          EOF
+          )
+                    else
+                      PROMPT=$(cat <<EOF
+          You are a senior software engineer and need to provide a code review based on the following git diff.
+
+          Offer detailed feedback in Markdown with headings per file.
+
+          <git diff> $DIFF </git diff>
+          EOF
+          )
+          fi
+
+          REQUEST_BODY=$(jq -n \
+            --arg model "${{ secrets.REVIEW_MODEL_NAME }}" \
+            --arg prompt "$PROMPT" \
+            '{model: $model, prompt: $prompt, stream: false}')
+
+          echo "$REQUEST_BODY" > body.json
+
+          RESPONSE=$(curl -s -X POST "${{ secrets.REVIEW_API_URL }}" \
+            -H "Content-Type: application/json" \
+            -d @body.json | jq -r .response)
+
+          echo "$RESPONSE" > review_result.txt
+          echo "REVIEW DONE"
+
+      - name: Format and parse PR review comments
+        if: env.EVENT_TYPE == 'pull_request'
+        id: parse
+        run: |
+          sed '/^```/d' review_result.txt > cleaned.txt
+          COMMENT=$(cat cleaned.txt | jq -c .)
+          echo "comment=$COMMENT" >> $GITHUB_OUTPUT
+
+      - name: Add Pull Request Review Comment
+        if: env.EVENT_TYPE == 'pull_request'
+        uses: nbaztec/add-pr-review-comment@v1.0.7
+        with:
+          comments: ${{ steps.parse.outputs.comment }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token-user-login: "github-actions[bot]"
+          allow-repeats: false
+
+      - name: Display review results in workflow log
+        if: env.EVENT_TYPE == 'push'
+        run: |
+          echo "===== Ollama Code Review Results ====="
+          cat review_result.txt
+          echo "======================================"
+
+      - name: Upload review results as artifact
+        if: env.EVENT_TYPE == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-code-review
+          path: review_result.txt
